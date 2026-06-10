@@ -25,6 +25,44 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _maybe_p2p_all_to_all(x: torch.Tensor, mode: int) -> torch.Tensor | None:
+    """Try the fused-transpose NVLink-P2P all-to-all (head_dim == 2, uniform).
+
+    Returns the result tensor on success, or None to signal that the caller
+    should fall back to the NCCL implementation. The result is bit-identical to
+    the NCCL path (it is a pure index permutation), so this is a transparent
+    fast path.
+    """
+    from sglang.multimodal_gen.runtime.distributed.device_communicators.ulysses_p2p_a2a import (
+        get_ulysses_p2p_a2a,
+    )
+
+    group = get_sp_group().ulysses_group
+    if group is None:
+        return None
+
+    mgr = get_ulysses_p2p_a2a(group, x.device)
+    # When the feature is disabled/unsupported (a decision that is consistent
+    # across all ranks in the group) or while capturing a CUDA graph, fall back
+    # without any extra collective: do not perturb the default path and do not
+    # bake a vote into the captured graph.
+    if mgr is None:
+        return None
+    if torch.cuda.is_current_stream_capturing():
+        return None
+
+    prepared = mgr._prepare_call(x, mode)  # pylint: disable=protected-access
+    if prepared is None:
+        raise RuntimeError("Ulysses P2P fast path preparation failed unexpectedly.")
+
+    x_prepared, out_shape, B, S_local, H, D = prepared
+    out = torch.empty(out_shape, dtype=x_prepared.dtype, device=x_prepared.device)
+    torch.ops.sgl_kernel.ulysses_a2a.default(
+        mgr.fa, x_prepared, out, B, S_local, H, D, mode
+    )
+    return out
+
+
 def _maybe_wait(tensor: torch.Tensor) -> torch.Tensor:
     """
     When tracing the code, the result tensor is not an AsyncCollectiveTensor,
@@ -90,6 +128,11 @@ def _usp_input_all_to_all(x: torch.Tensor, head_dim: int = 1) -> torch.Tensor:
 
     assert x.ndim == 4, f"x must have 4 dimensions, got {x.ndim}"
     assert head_dim in (1, 2), f"head_dim must be 1 or 2, got {head_dim}"
+
+    if head_dim == 2:
+        fast = _maybe_p2p_all_to_all(x, mode=0)
+        if fast is not None:
+            return fast
 
     # Move the dimension to be split (h_global) to dim 0 for all_to_all_single
     if head_dim == 1:
@@ -223,6 +266,11 @@ def _usp_output_all_to_all(x: torch.Tensor, head_dim: int = 1) -> torch.Tensor:
 
     assert x.ndim == 4, f"x must have 4 dimensions, got {x.ndim}"
     assert head_dim in (1, 2), f"head_dim must be 1 or 2, got {head_dim}"
+
+    if head_dim == 2:
+        fast = _maybe_p2p_all_to_all(x, mode=1)
+        if fast is not None:
+            return fast
 
     # Move the dimension to be split (s_global) to dim 0 for all_to_all_single
     if head_dim == 1:

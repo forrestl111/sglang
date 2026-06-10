@@ -603,6 +603,11 @@ class Envs:
     # Set to 0: force disable (use default Aiter AR even with --enable-deterministic-inference)
     SGLANG_USE_1STAGE_ALLREDUCE = EnvBool(False)
     SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2 = EnvBool(True)
+    # Use the fused-transpose NVLink-P2P all-to-all for Ulysses sequence parallel
+    # (multimodal_gen diffusion). Opt-in; falls back to NCCL all_to_all when off
+    # or when preconditions (intra-node NVLink, world size in {2,4,6,8}, supported
+    # dtype, uniform head_dim==2 layout) are not met.
+    SGLANG_ENABLE_ULYSSES_P2P_A2A = EnvBool(False)
     SGLANG_FLASHINFER_PREFILL_SPLIT_TILE_SIZE = EnvInt(4096)
     SGLANG_FLASHINFER_DECODE_SPLIT_TILE_SIZE = EnvInt(2048)
     SGLANG_TRITON_PREFILL_TRUNCATION_ALIGN_SIZE = EnvInt(4096)

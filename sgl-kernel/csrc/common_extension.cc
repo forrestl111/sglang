@@ -39,6 +39,21 @@ TORCH_LIBRARY_FRAGMENT(sgl_kernel, m) {
   m.impl("all_reduce", torch::kCUDA, &all_reduce);
 
   /*
+   * From csrc/ulysses_a2a
+   */
+  m.def(
+      "init_ulysses_a2a(int[] out_ipc_ptrs, int[] signal_ipc_ptrs, int rank, "
+      "int world_size, bool full_nvlink) -> int");
+  m.impl("init_ulysses_a2a", torch::kCUDA, &init_ulysses_a2a);
+
+  m.def("dispose_ulysses_a2a", &dispose_ulysses_a2a);
+
+  m.def(
+      "ulysses_a2a(int fa, Tensor inp, Tensor! out, int B, int S_local, "
+      "int H, int D, int mode) -> ()");
+  m.impl("ulysses_a2a", torch::kCUDA, &ulysses_a2a);
+
+  /*
    * From csrc/attention
    */
   m.def("merge_state_v2(Tensor v_a, Tensor s_a, Tensor v_b, Tensor s_b, Tensor! v_merged, Tensor! s_merged) -> ()");

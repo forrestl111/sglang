@@ -23,6 +23,11 @@ else:
         _preload_cuda_library()
 
     from sgl_kernel.allreduce import *
+    from sgl_kernel.ulysses_a2a import (
+        dispose_ulysses_a2a,
+        init_ulysses_a2a,
+        ulysses_a2a,
+    )
     from sgl_kernel.attention import (
         cutlass_mla_decode,
         cutlass_mla_get_workspace_size,
