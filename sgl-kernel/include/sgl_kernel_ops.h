@@ -110,6 +110,15 @@ void ulysses_a2a(
     int64_t H,
     int64_t D,
     int64_t mode);
+void ulysses_a2a_tk(
+    fptr_t _fa,
+    torch::Tensor& inp,
+    torch::Tensor& out,
+    int64_t B,
+    int64_t S_local,
+    int64_t H,
+    int64_t D,
+    int64_t mode);
 
 /*
  * From csrc/attention

@@ -608,6 +608,10 @@ class Envs:
     # or when preconditions (intra-node NVLink, world size in {2,4,6,8}, supported
     # dtype, uniform head_dim==2 layout) are not met.
     SGLANG_ENABLE_ULYSSES_P2P_A2A = EnvBool(False)
+    # Use ThunderKittens-style task decomposition implementation for the
+    # Ulysses NVLink-P2P all-to-all fast path. Enabled by default; set to 0
+    # only for regression bisect against the legacy kernel.
+    SGLANG_ENABLE_ULYSSES_P2P_A2A_TK_STYLE = EnvBool(True)
     SGLANG_FLASHINFER_PREFILL_SPLIT_TILE_SIZE = EnvInt(4096)
     SGLANG_FLASHINFER_DECODE_SPLIT_TILE_SIZE = EnvInt(2048)
     SGLANG_TRITON_PREFILL_TRUNCATION_ALIGN_SIZE = EnvInt(4096)

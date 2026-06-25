@@ -38,3 +38,19 @@ def ulysses_a2a(
     S_global = S_local * world_size.
     """
     torch.ops.sgl_kernel.ulysses_a2a.default(fa, inp, out, B, S_local, H, D, mode)
+
+
+def ulysses_a2a_tk(
+    fa: int,
+    inp: torch.Tensor,
+    out: torch.Tensor,
+    B: int,
+    S_local: int,
+    H: int,
+    D: int,
+    mode: int,
+) -> None:
+    """ThunderKittens-style task-index decomposition variant."""
+    torch.ops.sgl_kernel.ulysses_a2a_tk.default(
+        fa, inp, out, B, S_local, H, D, mode
+    )

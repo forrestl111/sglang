@@ -328,7 +328,12 @@ class UlyssesP2PAllToAll:
         import sgl_kernel  # pyright: ignore[reportMissingImports]
 
         out = torch.empty(out_shape, dtype=x.dtype, device=x.device)
-        sgl_kernel.ulysses_a2a(self.fa, x, out, B, S_local, H, D, mode)
+        # TK-style is the default implementation; keep legacy kernel behind
+        # an opt-out switch for debugging/regression bisect.
+        if envs.SGLANG_ENABLE_ULYSSES_P2P_A2A_TK_STYLE.get():
+            sgl_kernel.ulysses_a2a_tk(self.fa, x, out, B, S_local, H, D, mode)
+        else:
+            sgl_kernel.ulysses_a2a(self.fa, x, out, B, S_local, H, D, mode)
         return out
 
 

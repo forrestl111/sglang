@@ -107,8 +107,11 @@ def _worker(world_size, rank, port):
 
     if rank == 0:
         print(f"\nworld_size={world_size} dtype={_DTYPE}")
-        print(f"{'shape (B,Sloc,H,D)':>28} | {'NCCL us':>10} | {'fused us':>10} | {'speedup':>8}")
-        print("-" * 68)
+        print(
+            f"{'shape (B,Sloc,H,D)':>28} | {'NCCL us':>10} | {'fused us':>10} | "
+            f"{'tk us':>10} | {'fused x':>8} | {'tk x':>8}"
+        )
+        print("-" * 96)
 
     for (B, S_local, H, D) in _SHAPES:
         if H % world_size != 0:
@@ -117,15 +120,20 @@ def _worker(world_size, rank, port):
         S_global = S_local * world_size
         x = torch.randn(B, S_local, H, D, dtype=_DTYPE, device=device)
         out = torch.empty(B, S_global, H_local, D, dtype=_DTYPE, device=device)
+        out_tk = torch.empty(B, S_global, H_local, D, dtype=_DTYPE, device=device)
 
         nccl_us = _bench_fn(lambda: ref_input_a2a(x, world_size, group))
         fused_us = _bench_fn(
             lambda: sgl_kernel.ulysses_a2a(fa, x, out, B, S_local, H, D, 0)
         )
+        tk_us = _bench_fn(
+            lambda: sgl_kernel.ulysses_a2a_tk(fa, x, out_tk, B, S_local, H, D, 0)
+        )
         if rank == 0:
             print(
                 f"{str((B, S_local, H, D)):>28} | {nccl_us:>10.2f} | "
-                f"{fused_us:>10.2f} | {nccl_us / fused_us:>7.2f}x"
+                f"{fused_us:>10.2f} | {tk_us:>10.2f} | "
+                f"{nccl_us / fused_us:>7.2f}x | {nccl_us / tk_us:>7.2f}x"
             )
 
     dist.barrier(group=group)

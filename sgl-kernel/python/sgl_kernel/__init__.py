@@ -27,6 +27,7 @@ else:
         dispose_ulysses_a2a,
         init_ulysses_a2a,
         ulysses_a2a,
+        ulysses_a2a_tk,
     )
     from sgl_kernel.attention import (
         cutlass_mla_decode,

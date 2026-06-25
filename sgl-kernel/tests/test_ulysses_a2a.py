@@ -159,6 +159,15 @@ def _run_correctness_worker(world_size, rank, distributed_init_port):
                     f"input a2a mismatch ws={world_size} dtype={dtype} "
                     f"shape={(B, S_local, H, D)}"
                 )
+                out_tk = torch.empty(
+                    B, S_global, H_local, D, dtype=dtype, device=device
+                )
+                sgl_kernel.ulysses_a2a_tk(fa, x, out_tk, B, S_local, H, D, 0)
+                torch.cuda.synchronize()
+                assert torch.equal(out_tk, ref), (
+                    f"input a2a tk mismatch ws={world_size} dtype={dtype} "
+                    f"shape={(B, S_local, H, D)}"
+                )
 
                 # ----- output mode (mode 1): inverse, must round-trip to x
                 back = torch.empty(B, S_local, H, D, dtype=dtype, device=device)
@@ -166,6 +175,13 @@ def _run_correctness_worker(world_size, rank, distributed_init_port):
                 torch.cuda.synchronize()
                 assert torch.equal(back, x), (
                     f"round-trip mismatch ws={world_size} dtype={dtype} "
+                    f"shape={(B, S_local, H, D)}"
+                )
+                back_tk = torch.empty(B, S_local, H, D, dtype=dtype, device=device)
+                sgl_kernel.ulysses_a2a_tk(fa, out_tk, back_tk, B, S_local, H, D, 1)
+                torch.cuda.synchronize()
+                assert torch.equal(back_tk, x), (
+                    f"round-trip tk mismatch ws={world_size} dtype={dtype} "
                     f"shape={(B, S_local, H, D)}"
                 )
 
