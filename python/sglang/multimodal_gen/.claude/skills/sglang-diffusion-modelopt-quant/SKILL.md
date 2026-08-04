@@ -54,7 +54,9 @@ This repo now contains:
 - diffusion-side NVFP4 loading from ModelOpt exports
 - FLUX.2 packed-QKV detection that distinguishes packed NVFP4 checkpoints from standard diffusers exports
 - automatic protection against incompatible FP8 CPU offload while keeping layerwise DiT offload available
-- separate online diffusion quantization paths such as `--quantization fp8` / `mxfp4`; keep those out of this ModelOpt PTQ/export workflow unless the user explicitly asks for runtime quantization
+- separate online diffusion quantization paths such as `--quantization fp8` /
+  `nvfp4` / `mxfp4`; keep those out of this ModelOpt PTQ/export workflow unless
+  the user explicitly asks for runtime quantization
 - FP8 transformer build:
   [`python/sglang/multimodal_gen/tools/build_modelopt_fp8_transformer.py`](../../../tools/build_modelopt_fp8_transformer.py)
 - NVFP4 mixed transformer build:
@@ -84,19 +86,20 @@ you are explicitly testing a historical branch.
 
 ### MiniMax-H3 boundary
 
-MiniMax-H3 is current-main evidence for the separate online FP8 path, not a
-validated ModelOpt PTQ/export family. Its verified B200/B300 serving recipe
-loads the unquantized root checkpoint with `--quantization fp8` and preserves
-the video/audio patch projections, timestep MLP, and final video/audio heads in
-FP32. Do not add H3 to the ModelOpt support matrix or run the generic ModelOpt
-converter until an exact H3 export, loader mapping, accuracy check, and
-benchmark scope have been validated.
+MiniMax-H3 is current-main evidence for the separate online FP8 / NVFP4 paths,
+not a validated ModelOpt PTQ/export family. Its verified B200/B300 serving
+recipe loads the unquantized root checkpoint with `--quantization fp8` or
+`--quantization nvfp4` and preserves the video/audio patch projections,
+timestep MLP, and final video/audio heads in FP32. Do not add H3 to the
+ModelOpt support matrix or run the generic ModelOpt converter until an exact
+H3 export, loader mapping, accuracy check, and benchmark scope have been
+validated.
 
 If the user asks for current H3 online quantization, route the command and
 quality caveats through `sglang-diffusion-performance` and the MiniMax-H3
-cookbook. Online FP8 is approximate and must be compared against eager
+cookbook. Online FP8 / NVFP4 is approximate and must be compared against eager
 BF16/FP32 for both video and audio; combining it with Cache-DiT compounds two
-approximations.
+approximations. NVFP4 additionally requires Blackwell + FlashInfer FP4 GEMM.
 
 ## Related PR Watchlist
 

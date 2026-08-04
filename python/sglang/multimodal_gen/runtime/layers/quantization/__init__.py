@@ -22,9 +22,11 @@ from sglang.multimodal_gen.runtime.layers.quantization.mxfp4_npu import (
     NPUMXFP4Config,
 )
 from sglang.multimodal_gen.runtime.layers.quantization.mxfp8_npu import MXFP8Config
+from sglang.multimodal_gen.runtime.layers.quantization.nvfp4 import Nvfp4Config
 
 QuantizationMethods = Literal[
     "fp8",
+    "nvfp4",
     "modelopt",
     "modelopt_fp8",
     "modelopt_fp4",
@@ -45,6 +47,7 @@ _CUSTOMIZED_METHOD_TO_QUANT_CONFIG = {
     "bitsandbytes": BitsAndBytesConfig,
     "modelslim": ModelSlimConfig,
     "fp8": Fp8Config,
+    "nvfp4": Nvfp4Config,
     "mxfp4": Mxfp4Config,
     "mxfp8": MXFP8Config,
     "mxfp4_npu": NPUMXFP4Config,

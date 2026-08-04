@@ -1767,10 +1767,11 @@ class ServerArgs(DisaggServerArgsMixin):
                 "auto-detected from the checkpoint config or safetensors metadata when "
                 "possible. Use this flag to override auto-detection. "
                 "Online (post-load) quantization from a BF16/FP16 checkpoint "
-                "is supported for 'fp8' and 'mxfp4'. Other methods "
+                "is supported for 'fp8', 'nvfp4', and 'mxfp4'. Other methods "
                 "('modelopt', 'modelopt_fp8', 'modelopt_fp4', 'mxfp8', "
                 "'mxfp4_npu', 'modelslim') require a pre-quantized checkpoint. "
-                "Note: 'mxfp4' targets ROCm + MI350+ (gfx95x); "
+                "Note: 'nvfp4' targets NVIDIA Blackwell (SM100+) via FlashInfer; "
+                "'mxfp4' targets ROCm + MI350+ (gfx95x); "
                 "'mxfp4_npu' / 'mxfp8' target Ascend NPU (A5 series for mxfp4_npu)."
             ),
         )
@@ -1781,7 +1782,7 @@ class ServerArgs(DisaggServerArgsMixin):
             default=ServerArgs.quantization_ignored_layers,
             help=(
                 "Layer name patterns to keep unquantized during online quantization "
-                "(fp8/mxfp4). Each pattern is matched against the layer prefix. "
+                "(fp8/nvfp4/mxfp4). Each pattern is matched against the layer prefix. "
                 "Example: --quantization-ignored-layers img_mod txt_mod to_out"
             ),
         )

@@ -143,6 +143,19 @@ export const config = {
             "verified B200 and B300 runs reduced memory; re-benchmark latency on the target workload.",
           ],
         },
+        {
+          id: "nvfp4",
+          label: "NVFP4 — Approximate (FlashInfer)",
+          showWhen: (s) => ["b200", "b300"].includes(s.hw),
+          disabled: (s) => s.profile !== "resident",
+          disableReason:
+            "The documented NVFP4 operating point keeps the transformer resident; FSDP combinations have not been validated.",
+          flags: ["--quantization nvfp4"],
+          hints: [
+            "Online NVFP4 uses FlashInfer FP4 GEMM on Blackwell. Validate both",
+            "video and audio quality; expect larger memory savings than FP8 with more approximation.",
+          ],
+        },
       ],
     },
     {

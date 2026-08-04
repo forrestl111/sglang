@@ -494,6 +494,7 @@ def _needs_device_weight_postprocess(
     quant_name = _get_quant_config_name(quant_config)
     serialized_flag_by_quant_name = {
         "fp8": "is_checkpoint_fp8_serialized",
+        "nvfp4": "is_checkpoint_nvfp4_serialized",
         "mxfp8": "is_checkpoint_fp8_serialized",
         "mxfp4": "is_checkpoint_mxfp4_serialized",
         "mxfp4_npu": "is_checkpoint_mxfp4_npu_serialized",
@@ -596,13 +597,13 @@ def _resolve_quant_config(
         if server_args.quantization == "modelslim":
             return get_quant_config(hf_config, component_model_path)
 
-        # Online-quant convention: for `fp8` and `mxfp4`, a no-arg
+        # Online-quant convention: for `fp8`, `nvfp4`, and `mxfp4`, a no-arg
         # QuantizationConfig() selects the post-load path -- weights load
         # in source dtype and are quantized in
         # process_weights_after_loading.
         quant_cls = get_quantization_config(server_args.quantization)
         quant_kwargs = {}
-        if server_args.quantization in {"fp8", "mxfp4"}:
+        if server_args.quantization in {"fp8", "nvfp4", "mxfp4"}:
             quant_kwargs["ignored_layers"] = getattr(
                 server_args, "quantization_ignored_layers", None
             )

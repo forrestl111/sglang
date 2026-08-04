@@ -20,6 +20,10 @@ from sglang.multimodal_gen.runtime.layers.quantization.fp8 import (
     Fp8Config,
     Fp8LinearMethod,
 )
+from sglang.multimodal_gen.runtime.layers.quantization.nvfp4 import (
+    Nvfp4Config,
+    Nvfp4LinearMethod,
+)
 from sglang.multimodal_gen.runtime.layers.usp import _usp_input_all_to_all_packed_qkv
 from sglang.multimodal_gen.runtime.loader.utils import get_param_names_mapping
 from sglang.multimodal_gen.runtime.models.dits.minimax_h3 import (
@@ -157,6 +161,30 @@ def test_online_fp8_keeps_fp32_boundaries_and_ignored_layers_unquantized():
         )
 
     assert isinstance(model.blocks[0].attn.qkv_proj.quant_method, Fp8LinearMethod)
+    assert isinstance(
+        model.blocks[0].attn.out_proj.quant_method, UnquantizedLinearMethod
+    )
+    for layer in (
+        model.video_patch_proj,
+        model.audio_patch_proj,
+        model.time_embedder.proj_in,
+        model.time_embedder.proj_out,
+        model.final_layer.video_out,
+        model.final_layer.audio_out,
+    ):
+        assert isinstance(layer.quant_method, UnquantizedLinearMethod)
+
+
+def test_online_nvfp4_keeps_fp32_boundaries_and_ignored_layers_unquantized():
+    _ensure_single_process_parallel_runtime()
+    with torch.device("meta"):
+        model = MiniMaxH3DiTModel(
+            config=MiniMaxH3DiTConfig(),
+            hf_config={},
+            quant_config=Nvfp4Config(ignored_layers=["blocks.0.attn.out_proj"]),
+        )
+
+    assert isinstance(model.blocks[0].attn.qkv_proj.quant_method, Nvfp4LinearMethod)
     assert isinstance(
         model.blocks[0].attn.out_proj.quant_method, UnquantizedLinearMethod
     )

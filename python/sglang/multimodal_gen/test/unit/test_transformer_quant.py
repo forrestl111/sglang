@@ -55,6 +55,7 @@ from sglang.multimodal_gen.runtime.layers.quantization.modelopt_quant import (
     ModelOptFp8Config,
     _prepare_nvfp4_weight_bytes,
 )
+from sglang.multimodal_gen.runtime.layers.quantization.nvfp4 import Nvfp4Config
 from sglang.multimodal_gen.runtime.loader.component_loaders import transformer_loader
 from sglang.multimodal_gen.runtime.loader.component_loaders.transformer_loader import (
     _warn_if_expected_param_dtype_missing,
@@ -242,6 +243,7 @@ class TestTransformerQuantHelpers(unittest.TestCase):
                 Fp8Config(is_checkpoint_fp8_serialized=True)
             )
         )
+        self.assertTrue(_needs_device_weight_postprocess(Nvfp4Config()))
         self.assertTrue(_needs_device_weight_postprocess(_make_quant_config("mxfp8")))
         self.assertFalse(
             _needs_device_weight_postprocess(
@@ -272,6 +274,23 @@ class TestTransformerQuantHelpers(unittest.TestCase):
         )
 
         self.assertIsInstance(quant_config, Fp8Config)
+        self.assertEqual(quant_config.ignored_layers, ignored_layers)
+
+    def test_online_nvfp4_receives_cli_ignored_layer_patterns(self):
+        ignored_layers = ["blocks.0.attn.out_proj", "token_refiner"]
+        server_args = self._make_server_args(
+            quantization="nvfp4",
+            quantization_ignored_layers=ignored_layers,
+        )
+
+        quant_config = _resolve_quant_config(
+            hf_config={},
+            server_args=server_args,
+            safetensors_list=[],
+            component_model_path="/unused/component/path",
+        )
+
+        self.assertIsInstance(quant_config, Nvfp4Config)
         self.assertEqual(quant_config.ignored_layers, ignored_layers)
 
     @patch(

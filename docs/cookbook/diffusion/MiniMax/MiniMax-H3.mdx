@@ -582,7 +582,8 @@ different task profile, reference set, resolution, or prompt template.
 
 <Tab title="Online quantization">
 
-On the verified 8× B200 topology, quantize the BF16 transformer at server load:
+On the verified 8× B200 topology, quantize the BF16 transformer at server load.
+Use `--quantization fp8` or `--quantization nvfp4` (FlashInfer, Blackwell):
 
 ```bash Command
 sglang serve \
@@ -592,6 +593,17 @@ sglang serve \
   --ulysses-degree 8 \
   --performance-mode speed \
   --quantization fp8 \
+  --port 30010
+```
+
+```bash Command
+sglang serve \
+  --model-path MiniMaxAI/MiniMax-H3 \
+  --model-variant ref2va \
+  --num-gpus 8 \
+  --ulysses-degree 8 \
+  --performance-mode speed \
+  --quantization nvfp4 \
   --port 30010
 ```
 
@@ -605,17 +617,18 @@ sglang serve \
   --model-variant ref2va \
   --num-gpus 8 \
   --ulysses-degree 8 \
-  --quantization fp8 \
+  --quantization nvfp4 \
   --quantization-ignored-layers blocks.0.attn token_refiner \
   --port 30010
 ```
 
 <Warning>
-Online FP8 is approximate and is not a consistency ground-truth mode. It can
-be combined with Cache-DiT, but the two approximations compound. Validate
+Online FP8 / NVFP4 is approximate and is not a consistency ground-truth mode.
+It can be combined with Cache-DiT, but the two approximations compound. Validate
 visual quality, audio quality, memory use, and latency on the target workload.
-The picker exposes this option only on the B200 and B300 topologies used for
-real H3 validation runs.
+NVFP4 requires Blackwell (SM100+) and FlashInfer FP4 kernels; the picker
+exposes these options on the B200 and B300 topologies used for real H3
+validation runs.
 </Warning>
 
 </Tab>

@@ -68,12 +68,12 @@ backend.
   </thead>
   <tbody>
     <tr>
-      <td><code>fp8</code> / <code>mxfp4</code> (online quantization)</td>
+      <td><code>fp8</code> / <code>nvfp4</code> / <code>mxfp4</code> (online quantization)</td>
       <td>Unquantized checkpoint (offline via AMD Quark coming soon)</td>
-      <td><code>--quantization &#123;fp8,mxfp4&#125;</code></td>
-      <td>Z-Image-Turbo (validated), others likely work. More support coming soon.</td>
-      <td>MXFP4: <code>aiter</code> on ROCm</td>
-      <td>MXFP4 requires ROCm and MI350+ (gfx95x). Weights quantized at load time, activations quantized to <code>fp8</code> / <code>mxfp4</code> dynamically.</td>
+      <td><code>--quantization &#123;fp8,nvfp4,mxfp4&#125;</code></td>
+      <td>Z-Image-Turbo (validated for fp8/mxfp4), MiniMax-H3 (fp8/nvfp4). Others likely work.</td>
+      <td>NVFP4: FlashInfer on Blackwell; MXFP4: <code>aiter</code> on ROCm</td>
+      <td>NVFP4 requires SM100+ and FlashInfer FP4 kernels. MXFP4 requires ROCm and MI350+ (gfx95x). Weights quantized at load time; activations quantized dynamically.</td>
     </tr>
     <tr>
       <td><code>fp8</code> (offline quantization)</td>
@@ -139,6 +139,26 @@ timestep, and output projections. See the
 [MiniMax-H3 cookbook](/cookbook/diffusion/MiniMax/MiniMax-H3#6-runtime-feature-recipes)
 for its distributed serving recipe.
 
+### NVFP4 Online Quantization
+
+Apply FlashInfer NVFP4 quantization to an unquantized BF16/FP16 transformer.
+**Requires NVIDIA Blackwell (SM100+) and FlashInfer with FP4 GEMM support.**
+
+```bash
+sglang generate \
+  --model-path MiniMaxAI/MiniMax-H3 \
+  --model-variant fl2va \
+  --quantization nvfp4 \
+  --prompt "a beautiful sunset over the ocean" \
+  --save-output
+```
+
+Like online FP8, MiniMax-H3 keeps its video/audio patch projections, timestep
+MLP, and final video/audio heads in FP32. Optional
+`--quantization-ignored-layers` patterns keep additional DiT linears in BF16.
+Backend selection follows `SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND`
+(`trtllm` by default; `cudnn` / `cutlass` are also available).
+
 ### MXFP4 Online Quantization
 
 MXFP4 provides aggressive 4-bit compression with online quantization. **Note: Requires ROCm and MI350+ (gfx95x) GPU.**
@@ -170,6 +190,13 @@ sglang generate \
   --quantization mxfp4 \
   --quantization-ignored-layers attention.to_ \
   --prompt "a beautiful sunset" \
+  --save-output
+
+sglang generate \
+  --model-path MiniMaxAI/MiniMax-H3 \
+  --quantization nvfp4 \
+  --quantization-ignored-layers blocks.0.attn token_refiner \
+  --prompt "a beautiful sunset over the ocean" \
   --save-output
 ```
 
