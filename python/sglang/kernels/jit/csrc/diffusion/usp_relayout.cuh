@@ -36,8 +36,42 @@ __global__ void usp_merge_heads_vec_kernel(
     int64_t sequence_length,
     int64_t world_size) {
   const int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
-  for (int64_t index = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x; index < num_vectors;
-       index += stride) {
+  const int64_t start = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+
+  // The index decomposition is eight divisions/remainders per thread. In int64 those
+  // are emulated 64-bit divisions, and with 8.46M threads that is what holds this
+  // kernel to ~3 TB/s where the int32 pack kernel on the same traffic reaches 6.3 TB/s.
+  // Every operand fits in 32 bits for any realistic shape, so hoist the width choice
+  // out of the loop and use uint32 arithmetic when the whole range is representable.
+  if (num_vectors <= static_cast<int64_t>(0xFFFFFFFFu)) {
+    const uint32_t head_vectors32 = static_cast<uint32_t>(head_vectors);
+    const uint32_t local_heads32 = static_cast<uint32_t>(local_heads);
+    const uint32_t world_size32 = static_cast<uint32_t>(world_size);
+    const uint32_t sequence_length32 = static_cast<uint32_t>(sequence_length);
+    const uint32_t batch32 = static_cast<uint32_t>(batch);
+    for (int64_t index = start; index < num_vectors; index += stride) {
+      uint32_t rest = static_cast<uint32_t>(index);
+      const uint32_t head_offset = rest % head_vectors32;
+      rest /= head_vectors32;
+      const uint32_t head = rest % local_heads32;
+      rest /= local_heads32;
+      const uint32_t rank = rest % world_size32;
+      rest /= world_size32;
+      const uint32_t sequence = rest % sequence_length32;
+      const uint32_t batch_index = rest / sequence_length32;
+
+      const uint32_t source =
+          ((((rank * sequence_length32 + sequence) * batch32 + batch_index) * local_heads32) + head) *
+              head_vectors32 +
+          head_offset;
+      device::AlignedVector<T, kVec> value;
+      value.load(x, static_cast<int64_t>(source));
+      value.store(out, index);
+    }
+    return;
+  }
+
+  for (int64_t index = start; index < num_vectors; index += stride) {
     int64_t rest = index;
     const int64_t head_offset = rest % head_vectors;
     rest /= head_vectors;
