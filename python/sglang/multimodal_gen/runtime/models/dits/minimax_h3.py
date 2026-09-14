@@ -31,6 +31,9 @@ from sglang.kernels.ops.diffusion import (
 )
 from sglang.kernels.ops.layernorm.norm import fused_inplace_qknorm
 from sglang.multimodal_gen import envs
+from sglang.multimodal_gen.runtime.managers.forward_context import (
+    get_forward_context,
+)
 from sglang.multimodal_gen.configs.models.dits.minimax_h3 import (
     MINIMAX_H3_ADALN_MODALITY_NUM,
     MINIMAX_H3_PACKED_SEQUENCE_ALIGNMENT,
@@ -1590,6 +1593,42 @@ class MiniMaxH3FinalLayer(nn.Module):
             quant_config=None,
             prefix=f"{prefix}.audio_out",
         )
+        # Parallel Decoding Distillation heads, one per denoise step, loaded by
+        # `load_pdd_fused_heads`. None on every ordinary run.
+        self._pdd_heads: dict[str, torch.Tensor] | None = None
+
+    def load_pdd_fused_heads(self, path: str) -> None:
+        """Swap the two output heads for a per-step stack (PDD).
+
+        PDD replicates the final linear layer once per time interval and lets one
+        backbone evaluation advance a whole block of them; the per-block heads
+        fuse into one because H3's euler-eta0 step is linear in the predicted
+        velocity. `tools/fuse_minimax_h3_pdd_heads.py` does that fusion offline, so what arrives
+        here is already one head per denoise step and the loop is unchanged --
+        only which weight the projection uses varies.
+        """
+        from safetensors import safe_open
+
+        with safe_open(path, "pt") as f:
+            self._pdd_heads = {k: f.get_tensor(k) for k in f.keys()}
+        steps = self._pdd_heads["video_out.weight"].shape[0]
+        logger.info("MiniMax-H3 PDD: %d fused output heads loaded from %s", steps, path)
+
+    def _pdd_project(
+        self, h: torch.Tensor, name: str
+    ) -> torch.Tensor:
+        heads = self._pdd_heads
+        step = int(get_forward_context().current_timestep)
+        stack = heads[f"{name}.weight"]
+        if not 0 <= step < stack.shape[0]:
+            raise ValueError(
+                f"MiniMax-H3 PDD has {stack.shape[0]} fused heads but the loop is at "
+                f"step {step}; run with --num-inference-steps {stack.shape[0] + 1} "
+                "(H3 counts sigma grid points, so that is one more than the steps)."
+            )
+        weight = stack[step].to(device=h.device, dtype=h.dtype)
+        bias = heads[f"{name}.bias"][step].to(device=h.device, dtype=h.dtype)
+        return torch.nn.functional.linear(h, weight, bias)
 
     def forward(
         self,
@@ -1647,6 +1686,8 @@ class MiniMaxH3FinalLayer(nn.Module):
         h = _modulate_scale_shift(h, shift, scale, inverse_indices, dtype=_BF16_DTYPE)
         # Preserve full precision through both final output projections.
         h = h.to(_FP32_DTYPE)
+        if self._pdd_heads is not None:
+            return self._pdd_project(h, "video_out"), self._pdd_project(h, "audio_out")
         video, _ = self.video_out(h)
         audio, _ = self.audio_out(h)
         return video, audio
@@ -1869,6 +1910,12 @@ class MiniMaxH3DiTModel(BaseDiT, LayerwiseOffloadableModuleMixin):
             prefix="final_layer",
             use_adaln_cache=self._adaln_precomputed,
         )
+        # An env var rather than a server arg: this is a comparison harness for
+        # one third-party checkpoint, not a serving feature. Empty on every
+        # ordinary run, and the weights are only read when it is set.
+        pdd_heads = envs.SGLANG_DIFFUSION_MINIMAX_H3_PDD_HEADS
+        if pdd_heads:
+            self.final_layer.load_pdd_fused_heads(pdd_heads)
         self.adaln_cache = (
             MiniMaxH3AdalnCache(
                 arch,
