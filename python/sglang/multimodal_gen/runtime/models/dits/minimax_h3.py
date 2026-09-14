@@ -20,6 +20,7 @@ import torch.nn as nn
 from safetensors.torch import safe_open
 
 from sglang.kernels.ops.activation.activation import (
+    silu_and_mul_with_activation_rounding,
     silu_and_mul_with_activation_rounding_,
 )
 from sglang.kernels.ops.diffusion import (
@@ -359,13 +360,22 @@ def _modulate_gate(
 
 def _silu_mul(hidden: torch.Tensor, *, reuse_input: bool) -> torch.Tensor:
     if (
-        reuse_input
-        and hidden.is_cuda
+        hidden.is_cuda
         and hidden.dtype == _BF16_DTYPE
         and hidden.is_contiguous()
         and hidden.shape[-1] % 16 == 0
     ):
-        return silu_and_mul_with_activation_rounding_(hidden)
+        # `reuse_input` only says whether fc1's output may be overwritten -- it does not
+        # say whether the fused kernel is usable. Gating the whole fusion on it sent every
+        # quantized run (fp8 sets reuse_fc1_activation=False) down the eager
+        # chunk+silu+mul path, which is two extra full-tensor passes over a
+        # 9440x28672 bf16 activation: 759 us per block, 6% of all GPU time.
+        # The out-of-place kernel is the same kernel writing to a fresh buffer, and is
+        # bit-identical to eager (measured; the non-rounding `silu_and_mul` is not --
+        # it differs by 6.25e-2, so it must not be substituted here).
+        if reuse_input:
+            return silu_and_mul_with_activation_rounding_(hidden)
+        return silu_and_mul_with_activation_rounding(hidden)
     gate, up = hidden.chunk(2, dim=-1)
     return nn.functional.silu(gate) * up
 
