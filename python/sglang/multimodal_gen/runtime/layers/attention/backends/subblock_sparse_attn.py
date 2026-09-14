@@ -478,6 +478,25 @@ class SubBlockSparseAttentionImpl(AttentionImpl):
         if not sparse_segments:
             return all_dense()
 
+        def run_segment(start: int, stop: int) -> torch.Tensor:
+            # No `.contiguous()` here. After the Ulysses all-to-all q/k/v are
+            # last-dim slices of one packed buffer, and `bsa_attn_sm100_blk64_fwd`
+            # opens by calling `.contiguous()` on all three itself, so a copy here
+            # would only duplicate that one (135 MB per tensor at S=37.7k on B200).
+            q_seg = query[start:stop].unsqueeze(0)
+            k_seg = key[start:stop].unsqueeze(0)
+            v_seg = value[start:stop].unsqueeze(0)
+            if (start, stop) in sparse_segments:
+                return self._sparse_attention(q_seg, k_seg, v_seg)[0]
+            return self._dense_segment(q_seg, k_seg, v_seg)[0]
+
+        if len(segments) == 1 and segments[0] == (0, query.shape[0]):
+            # The common case: one packed document spanning the whole batch.
+            # Staging it through an `empty_like` buffer would cost a full-tensor
+            # copy (135 MB at S=37.7k on B200) for nothing -- the kernel's own
+            # output already has exactly the shape and layout of the result.
+            return run_segment(0, query.shape[0])
+
         out = torch.empty_like(query)
         # cu_seqlens covers every packed row in practice; a caller that leaves
         # a tail outside the last document would otherwise read uninitialized
@@ -485,19 +504,7 @@ class SubBlockSparseAttentionImpl(AttentionImpl):
         if segments[-1][1] < query.shape[0]:
             out[segments[-1][1] :].zero_()
         for start, stop in segments:
-            # Deliberately not `.contiguous()`. After the Ulysses all-to-all,
-            # q/k/v are last-dim slices of one packed buffer, so they are
-            # strided; both the block-sparse kernel and SDPA permute them
-            # anyway, and forcing contiguity here measured as a wasted
-            # full-tensor copy (0.46 ms per call at S=37.7k on B200).
-            q_seg = query[start:stop].unsqueeze(0)
-            k_seg = key[start:stop].unsqueeze(0)
-            v_seg = value[start:stop].unsqueeze(0)
-            if (start, stop) in sparse_segments:
-                seg_out = self._sparse_attention(q_seg, k_seg, v_seg)
-            else:
-                seg_out = self._dense_segment(q_seg, k_seg, v_seg)
-            out[start:stop] = seg_out[0]
+            out[start:stop] = run_segment(start, stop)
         return out
 
     def _dense_segment(

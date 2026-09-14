@@ -1,6 +1,7 @@
 # Copied and adapted from: https://github.com/hao-ai-lab/FastVideo
 
 import logging
+import os
 from typing import TYPE_CHECKING
 
 import torch
@@ -330,6 +331,12 @@ def _usp_input_all_to_all_packed_qkv(
     if world_size <= 1:
         return q, k, v
 
+    # Off by default: measured a wash on B200, see the planar function's note.
+    if os.environ.get("SGLANG_USP_PLANAR_QKV", "0") == "1" and not (
+        torch.compiler.is_compiling() or torch.cuda.is_current_stream_capturing()
+    ):
+        return _usp_input_all_to_all_planar_qkv(q, k, v)
+
     assert q.ndim == 3 and q.shape == k.shape == v.shape
     s_local, h_global, head_size = q.shape
     assert h_global % world_size == 0
@@ -370,6 +377,71 @@ def _usp_input_all_to_all_packed_qkv(
     packed = packed.reshape(s_local * world_size, h_local, 3 * head_size)
     q, k, v = packed.split(head_size, dim=-1)
     return q, k, v
+
+
+def _usp_input_all_to_all_planar_qkv(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Exchange 3D Q/K/V so the *received* Q, K and V are each contiguous.
+
+    The destination-major packed exchange (`_usp_input_all_to_all_packed_qkv`)
+    receives one `[s_global, h_local, 3*head_size]` buffer, so Q/K/V come back
+    as last-dim slices with stride `3*head_size`. Nothing downstream can use a
+    tensor in that layout: the flashinfer block-sparse kernel opens with
+    `q.contiguous(); k.contiguous(); v.contiguous()`, which is three full-tensor
+    copies (135 MB each at S=37.7k, h_local=14, d=128) on every attention call
+    of every rank.
+
+    An all-to-all concatenates the per-source-rank chunks along the outermost
+    dimension, so a single collective can never land Q contiguously while the
+    chunk also carries K and V -- the rank axis ends up *inside* the sequence
+    axis. Issuing one collective per tensor does: each receive buffer is then
+    `[world, s_local, h_local, d]`, whose flatten to `[s_global, h_local, d]` is
+    a free view. The three collectives are grouped into a single NCCL launch, so
+    the wire traffic and the number of kernel launches are unchanged; the send
+    side moves the same bytes as the fused pack kernel. The receive-side unpack
+    copy simply disappears.
+
+    Measured on 4xB200, MiniMax-H3 768p/5s, arm1 (fp8 + cache-dit + subblock sparse):
+    no win. Aggregate `direct_copy_kernel_cuda` time went 5.04 s -> 5.68 s and total
+    GPU kernel time 45.22 s -> 45.07 s, i.e. flat; denoise 10.00 s -> 10.05 s. The
+    unpack does disappear, but the three send-side `copy_` calls that replace the one
+    fused pack kernel move exactly the bytes it saves. Kept behind
+    `SGLANG_USP_PLANAR_QKV=1`, off by default: the win only materialises if the
+    send-side pack is rewritten as a single kernel writing the planar layout, or if
+    the attention kernel learns to read the packed layout directly. Output is
+    bit-identical either way.
+    """
+    world_size = get_ulysses_parallel_world_size()
+    if world_size <= 1:
+        return q, k, v
+
+    assert q.ndim == 3 and q.shape == k.shape == v.shape
+    s_local, h_global, head_size = q.shape
+    assert h_global % world_size == 0
+    h_local = h_global // world_size
+
+    shape = (3, world_size, s_local, h_local, head_size)
+    send = _a2a_staging_buffer("usp_planar_qkv_src", shape, q.dtype, q.device)
+    for index, tensor in enumerate((q, k, v)):
+        # [s_local, world, h_local, d] -> destination-major [world, s_local, h_local, d]
+        send[index].copy_(
+            tensor.view(s_local, world_size, h_local, head_size).permute(1, 0, 2, 3)
+        )
+
+    recv = _a2a_staging_buffer("usp_planar_qkv_recv", shape, q.dtype, q.device)
+    ulysses_pg = get_sp_group().ulysses_group
+    assert ulysses_pg is not None, "Ulysses process group is not initialized."
+    with dist._coalescing_manager(group=ulysses_pg, async_ops=False):
+        for index in range(3):
+            dist.all_to_all_single(
+                recv[index].view(-1), send[index].view(-1), group=ulysses_pg
+            )
+
+    out = recv.view(3, world_size * s_local, h_local, head_size)
+    return out[0], out[1], out[2]
 
 
 def _can_use_packed_qkv_a2a_4d(
