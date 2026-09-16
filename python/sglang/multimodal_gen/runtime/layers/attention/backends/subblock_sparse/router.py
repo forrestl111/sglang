@@ -235,17 +235,32 @@ class SubBlockRouter:
 
     @torch.no_grad()
     def route(
-        self, q: torch.Tensor, k: torch.Tensor, sparsity: float, softmax_scale: float
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        sparsity: float,
+        softmax_scale: float,
+        exclude_ragged_block: bool = False,
     ) -> RoutingPlan:
         """Select the top ``(1 - sparsity)`` fraction of key blocks per query block."""
         b, s, h, d = q.shape
-        gk = -(-k.shape[1] // BLOCK)
+        sk = k.shape[1]
+        gk = -(-sk // BLOCK)
         scores = self.scores(q, k, softmax_scale)  # [B, H, Gq, Gk]
         gq = scores.shape[2]
-        topk = _snap_up_to_8(math.ceil((1.0 - sparsity) * gk), gk)
+        # FP8 attention cannot be routed to an incomplete KV block: the block_sizes
+        # -inf mask lands on the raw scores, before Sage's group-max/rescale, so a
+        # fully masked group becomes -inf * scale and the output is NaN. Dropping the
+        # ragged block from the candidate set keeps the tail out of the plan entirely,
+        # which is the condition FLASHINFER_SAGE_ALLOW_PARTIAL_TAIL documents.
+        # The bf16 kernel masks it correctly and keeps the full candidate set.
+        gk_sel = gk - 1 if (exclude_ragged_block and sk % BLOCK) else gk
+        topk = _snap_up_to_8(math.ceil((1.0 - sparsity) * gk_sel), gk_sel)
         # One pass over the score matrix instead of torch.topk's several; the kernel
         # accepts the blocks in any order, so nothing sorts them.
-        index = fused_topk(scores.reshape(-1, gk), topk).view(b, h, gq, topk)
+        index = fused_topk(scores[..., :gk_sel].reshape(-1, gk_sel), topk).view(
+            b, h, gq, topk
+        )
         return RoutingPlan(index=index, topk=topk, num_blocks=gk)
 
     @staticmethod

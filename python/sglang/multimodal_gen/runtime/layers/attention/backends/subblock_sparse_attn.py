@@ -176,6 +176,65 @@ def _sm90_sparse_attention(
     return out
 
 
+
+# Sage-FP8 quantisation granularity, fixed by the blk64 kernel:
+#   Q -> one scale per (token, head)          q_scale [B, H, Sq]
+#   K -> one scale per (16-token bucket, head) k_scale [B, H, ceil(Sk/16)]
+#   V -> one scale per (head, dim)             v_scale [H, D]
+_FP8_E4M3_MAX = 448.0
+_SAGE_K_BUCKET = 16
+
+
+def _quantize_sage_fp8(
+    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+) -> tuple[torch.Tensor, ...]:
+    """bf16 [1, S, H, D] -> fp8 tensors plus their Sage scales.
+
+    Run after the Ulysses all-to-all, not before: V's scale reduces over the whole
+    token axis, and post-exchange each rank owns the complete sequence for its own
+    heads, so the reduction is local. Quantising on the pre-exchange shard would
+    need an all-reduce over the sequence-parallel group to agree on v_scale.
+    """
+    sq, h, d = q.shape[1], q.shape[2], q.shape[3]
+    sk = k.shape[1]
+
+    q_amax = q.abs().amax(dim=-1).float().clamp_min(1e-6)          # [1, Sq, H]
+    q_scale = q_amax / _FP8_E4M3_MAX
+    q_fp8 = (q / q_scale.unsqueeze(-1).to(q.dtype)).clamp(
+        -_FP8_E4M3_MAX, _FP8_E4M3_MAX
+    ).to(torch.float8_e4m3fn)
+
+    buckets = -(-sk // _SAGE_K_BUCKET)
+    pad = buckets * _SAGE_K_BUCKET - sk
+    k_padded = torch.nn.functional.pad(k, (0, 0, 0, 0, 0, pad)) if pad else k
+    k_amax = (
+        k_padded.abs()
+        .reshape(1, buckets, _SAGE_K_BUCKET, h, d)
+        .amax(dim=(2, 4))
+        .float()
+        .clamp_min(1e-6)
+    )                                                               # [1, buckets, H]
+    k_scale = k_amax / _FP8_E4M3_MAX
+    k_bcast = k_scale[0].repeat_interleave(_SAGE_K_BUCKET, dim=0)[:sk]
+    k_fp8 = (k / k_bcast.unsqueeze(-1).to(k.dtype)).clamp(
+        -_FP8_E4M3_MAX, _FP8_E4M3_MAX
+    ).to(torch.float8_e4m3fn)
+
+    v_scale = v.abs().amax(dim=(0, 1)).float().clamp_min(1e-6) / _FP8_E4M3_MAX  # [H, D]
+    v_fp8 = (v / v_scale.to(v.dtype)).clamp(
+        -_FP8_E4M3_MAX, _FP8_E4M3_MAX
+    ).to(torch.float8_e4m3fn)
+
+    return (
+        q_fp8,
+        k_fp8,
+        v_fp8,
+        q_scale.permute(0, 2, 1).contiguous(),
+        k_scale.permute(0, 2, 1).contiguous(),
+        v_scale,
+    )
+
+
 def _sm100_sparse_attention(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -183,8 +242,29 @@ def _sm100_sparse_attention(
     q2k_block_index: torch.Tensor,
     topk: int,
     softmax_scale: float,
+    sage_fp8: bool = False,
 ) -> torch.Tensor:
     """Run a SubBlock routing plan through FlashInfer's SM100 kernel."""
+    if sage_fp8:
+        q_fp8, k_fp8, v_fp8, q_scale, k_scale, v_scale = _quantize_sage_fp8(q, k, v)
+        # block_sizes must stay None: Sage applies the -inf mask before its
+        # group-max/rescale, so a fully masked group becomes -inf * scale = NaN.
+        # The router drops the ragged block from the candidate set instead, so the
+        # incomplete tail is never loaded.
+        out = load_bsa_attn_blk64_fwd()(
+            q_fp8,
+            k_fp8,
+            v_fp8,
+            q2k_block_index,
+            topk,
+            block_sizes=None,
+            q2k_block_nums=None,
+            softmax_scale=softmax_scale,
+            q_scale=q_scale,
+            k_scale=k_scale,
+            v_scale=v_scale,
+        )
+        return out[0] if isinstance(out, tuple) else out
     out = load_bsa_attn_blk64_fwd()(
         q,
         k,
@@ -219,9 +299,14 @@ def _run_subblock_sparse_attention(
     q2k_block_index: torch.Tensor,
     topk: int,
     softmax_scale: float,
+    sage_fp8: bool = False,
 ) -> torch.Tensor:
     """Dispatch the same 64x64 routing plan to Hopper or Blackwell."""
     runner = _get_subblock_sparse_attention_runner(q.device)
+    if sage_fp8:
+        if runner is not _sm100_sparse_attention:
+            raise RuntimeError("Sage FP8 SubBlock attention requires SM100")
+        return runner(q, k, v, q2k_block_index, topk, softmax_scale, sage_fp8=True)
     return runner(
         q,
         k,
@@ -279,6 +364,8 @@ class SubBlockSparseSchedule(msgspec.Struct, frozen=True):
 
     sparsity: float
     skip_first_steps: int
+    sage_fp8: bool
+    exclude_ragged_block: bool
     skip_first_layers: int
     n_k: int
     n_q: int
@@ -294,6 +381,11 @@ class SubBlockSparseSchedule(msgspec.Struct, frozen=True):
             skip_first_steps=int(
                 config.get("skip_first_steps", DEFAULT_SKIP_FIRST_STEPS)
             ),
+            sage_fp8=bool(config.get("sage_fp8", False)),
+            # Diagnostic: drop the ragged KV block from the routing candidates
+            # without enabling fp8, to separate the cost of the exclusion from the
+            # cost of quantisation.
+            exclude_ragged_block=bool(config.get("exclude_ragged_block", False)),
             skip_first_layers=int(
                 config.get("skip_first_layers", DEFAULT_SKIP_FIRST_LAYERS)
             ),
@@ -405,7 +497,12 @@ class SubBlockSparseAttentionImpl(AttentionImpl):
     ) -> torch.Tensor:
         """q, k, v: ``[1, S, H, 128]`` bf16 -> same shape."""
         plan = self.router.route(
-            q, k, sparsity=self.schedule.sparsity, softmax_scale=self.softmax_scale
+            q,
+            k,
+            sparsity=self.schedule.sparsity,
+            softmax_scale=self.softmax_scale,
+            exclude_ragged_block=self.schedule.sage_fp8
+            or self.schedule.exclude_ragged_block,
         )
         # Proof that the sparse path actually ran, with the shape it ran on --
         # the construction-time log above only says the layer was eligible.
@@ -421,6 +518,7 @@ class SubBlockSparseAttentionImpl(AttentionImpl):
             plan.index,
             plan.topk,
             self.softmax_scale,
+            sage_fp8=self.schedule.sage_fp8,
         )
 
     def forward(
